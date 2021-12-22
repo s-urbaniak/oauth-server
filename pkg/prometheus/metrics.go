@@ -15,6 +15,17 @@ const (
 	ErrorResult   = "error"
 )
 
+type Provider string
+
+const (
+	ProviderGitHub    Provider = "github"
+	ProviderGitLab             = "gitlab"
+	ProviderGoogle             = "google"
+	ProviderOpenID             = "openid"
+	ProviderBasicAuth          = "basicauth"
+	ProviderKeystone           = "keystone"
+)
+
 var (
 	authPasswordTotal = metrics.NewCounter(
 		&metrics.CounterOpts{
@@ -51,6 +62,16 @@ var (
 			Help:      "Counts basic password authentication attempts by result",
 		}, []string{"result"},
 	)
+	x509MissingSANCounter = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Subsystem: authSubsystem,
+			Name:      "x509_missing_san_total",
+			Help: "Counts the number of requests to servers missing SAN extension " +
+				"in their serving certificate OR the number of connection failures " +
+				"due to the lack of x509 certificate SAN extension missing " +
+				"(either/or, based on the runtime environment)",
+		}, []string{"provider"},
+	)
 )
 
 func init() {
@@ -59,10 +80,15 @@ func init() {
 	legacyregistry.MustRegister(authFormCounterResult)
 	legacyregistry.MustRegister(authBasicCounter)
 	legacyregistry.MustRegister(authBasicCounterResult)
+	legacyregistry.MustRegister(x509MissingSANCounter)
 
 	for _, resultLabel := range []string{SuccessResult, FailResult, ErrorResult} {
 		authBasicCounterResult.WithLabelValues(resultLabel)
 		authFormCounterResult.WithLabelValues(resultLabel)
+	}
+
+	for _, provider := range []Provider{ProviderGitHub, ProviderGitLab, ProviderGoogle, ProviderOpenID, ProviderKeystone, ProviderBasicAuth} {
+		X509MissingSANMetric(provider)
 	}
 }
 
@@ -76,4 +102,8 @@ func RecordFormPasswordAuth(result string) {
 	authPasswordTotal.Inc()
 	authFormCounter.Inc()
 	authFormCounterResult.WithLabelValues(result).Inc()
+}
+
+func X509MissingSANMetric(p Provider) metrics.CounterMetric {
+	return x509MissingSANCounter.WithLabelValues(string(p))
 }

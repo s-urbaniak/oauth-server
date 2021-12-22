@@ -34,6 +34,8 @@ import (
 	"github.com/openshift/library-go/pkg/oauth/oauthserviceaccountclient"
 	"github.com/openshift/library-go/pkg/security/ldapclient"
 	"github.com/openshift/library-go/pkg/security/ldaputil"
+	"github.com/openshift/library-go/pkg/transport"
+
 	oauthserver "github.com/openshift/oauth-server/pkg"
 	"github.com/openshift/oauth-server/pkg/api"
 	openshiftauthenticator "github.com/openshift/oauth-server/pkg/authenticator"
@@ -58,6 +60,7 @@ import (
 	"github.com/openshift/oauth-server/pkg/oauth/registry"
 	"github.com/openshift/oauth-server/pkg/osinserver"
 	"github.com/openshift/oauth-server/pkg/osinserver/registrystorage"
+	metrics "github.com/openshift/oauth-server/pkg/prometheus"
 	"github.com/openshift/oauth-server/pkg/server/csrf"
 	"github.com/openshift/oauth-server/pkg/server/errorpage"
 	"github.com/openshift/oauth-server/pkg/server/grant"
@@ -435,7 +438,7 @@ func (c *OAuthServerConfig) getAuthenticationHandler(mux oauthserver.Mux, errorH
 func (c *OAuthServerConfig) getOAuthProvider(identityProvider osinv1.IdentityProvider) (external.Provider, error) {
 	switch provider := identityProvider.Provider.Object.(type) {
 	case *osinv1.GitHubIdentityProvider:
-		transport, err := transportFor(provider.CA, "", "")
+		transport, err := transportFor(provider.CA, "", "", metrics.ProviderGitHub)
 		if err != nil {
 			return nil, err
 		}
@@ -446,7 +449,7 @@ func (c *OAuthServerConfig) getOAuthProvider(identityProvider osinv1.IdentityPro
 		return github.NewProvider(identityProvider.Name, provider.ClientID, clientSecret, provider.Hostname, transport, provider.Organizations, provider.Teams), nil
 
 	case *osinv1.GitLabIdentityProvider:
-		transport, err := transportFor(provider.CA, "", "")
+		transport, err := transportFor(provider.CA, "", "", metrics.ProviderGitLab)
 		if err != nil {
 			return nil, err
 		}
@@ -457,7 +460,7 @@ func (c *OAuthServerConfig) getOAuthProvider(identityProvider osinv1.IdentityPro
 		return gitlab.NewProvider(identityProvider.Name, provider.URL, provider.ClientID, clientSecret, transport, provider.Legacy)
 
 	case *osinv1.GoogleIdentityProvider:
-		transport, err := transportFor("", "", "")
+		transport, err := transportFor("", "", "", metrics.ProviderGoogle)
 		if err != nil {
 			return nil, err
 		}
@@ -468,7 +471,7 @@ func (c *OAuthServerConfig) getOAuthProvider(identityProvider osinv1.IdentityPro
 		return google.NewProvider(identityProvider.Name, provider.ClientID, clientSecret, provider.HostedDomain, transport)
 
 	case *osinv1.OpenIDIdentityProvider:
-		transport, err := transportFor(provider.CA, "", "")
+		transport, err := transportFor(provider.CA, "", "", metrics.ProviderOpenID)
 		if err != nil {
 			return nil, err
 		}
@@ -563,7 +566,7 @@ func (c *OAuthServerConfig) getPasswordAuthenticator(identityProvider osinv1.Ide
 		if len(connectionInfo.URL) == 0 {
 			return nil, fmt.Errorf("URL is required for BasicAuthPasswordIdentityProvider")
 		}
-		transport, err := transportFor(connectionInfo.CA, connectionInfo.CertInfo.CertFile, connectionInfo.CertInfo.KeyFile)
+		transport, err := transportFor(connectionInfo.CA, connectionInfo.CertInfo.CertFile, connectionInfo.CertInfo.KeyFile, metrics.ProviderBasicAuth)
 		if err != nil {
 			return nil, fmt.Errorf("Error building BasicAuthPasswordIdentityProvider client: %v", err)
 		}
@@ -574,7 +577,7 @@ func (c *OAuthServerConfig) getPasswordAuthenticator(identityProvider osinv1.Ide
 		if len(connectionInfo.URL) == 0 {
 			return nil, fmt.Errorf("URL is required for KeystonePasswordIdentityProvider")
 		}
-		transport, err := transportFor(connectionInfo.CA, connectionInfo.CertInfo.CertFile, connectionInfo.CertInfo.KeyFile)
+		transport, err := transportFor(connectionInfo.CA, connectionInfo.CertInfo.CertFile, connectionInfo.CertInfo.KeyFile, metrics.ProviderKeystone)
 		if err != nil {
 			return nil, fmt.Errorf("Error building KeystonePasswordIdentityProvider client: %v", err)
 		}
@@ -688,12 +691,14 @@ func (redirectSuccessHandler) AuthenticationSucceeded(user kuser.Info, then stri
 }
 
 // transportFor returns an http.Transport for the given ca and client cert (which may be empty strings)
-func transportFor(ca, certFile, keyFile string) (http.RoundTripper, error) {
-	transport, err := transportForInner(ca, certFile, keyFile)
+func transportFor(ca, certFile, keyFile string, provider metrics.Provider) (http.RoundTripper, error) {
+	t, err := transportForInner(ca, certFile, keyFile)
 	if err != nil {
 		return nil, err
 	}
-	return ktransport.DebugWrappers(transport), nil
+	t = transport.NewMissingSANRoundTripper(t, metrics.X509MissingSANMetric(provider))
+	t = ktransport.DebugWrappers(t)
+	return t, nil
 }
 
 func transportForInner(ca, certFile, keyFile string) (http.RoundTripper, error) {
